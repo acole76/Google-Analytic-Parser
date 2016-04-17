@@ -99,7 +99,6 @@ def parse_utma(cookie_value,file_offset,host,type,toPrint=True):
             utma_value["Hit"]=(utma_values[6])
         
         else:
-            #wft?!?  not sure if this is right
             utma_value["User"] = (utma_values[1])
 
             #cookie create time
