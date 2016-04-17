@@ -19,10 +19,10 @@
 #
 # You can view the GNU General Public License at <http://www.gnu.org/licenses/>
 
-__author__ = 'arizona4n6@gmail.com Mari DeGrazia'
-__version__ = '1.2'
-__copyright__ = 'Copyright (C) 2014 Mari DeGrazia'
-__license__ = 'GNU'
+#__author__ = 'arizona4n6@gmail.com Mari DeGrazia'
+#__version__ = '1.2'
+#__copyright__ = 'Copyright (C) 2014 Mari DeGrazia'
+#__license__ = 'GNU'
 
 #minor bug and type fixes (Thanks to Ron Dormido for testing it!)
 
@@ -40,6 +40,14 @@ try:
 except:
     ewf_available = False
 
+# Needed for pyshark support.
+try:
+    pyshark_available = True
+    import pyshark
+    import hashlib
+except:
+    pyshark_available = False
+
 #########################  Functions to process individual cookie values (utma, utmb and utmz)   ##########################
 
 #parse the utma values. Takes the utma value as input
@@ -54,7 +62,8 @@ def parse_utma(cookie_value,file_offset,host,type,toPrint=True):
     utma_value["2ndRecentVisit"]=""
     utma_value["MostRecent"]=""
     utma_value["Hit"]=""
-    
+    utma_value["User"]=""
+
     utma_values = cookie_value.split('.')
     if len(utma_values) == 0:
         return 0
@@ -65,6 +74,7 @@ def parse_utma(cookie_value,file_offset,host,type,toPrint=True):
         
         if ':' in utma_values[0]:
            
+            utma_value["User"] = (utma_values[2])
             utma_value["Created_Epoch"] = (utma_values[3])
             try:
                 utma_value["Created"]=(datetime.datetime.fromtimestamp(int(utma_values[3])).strftime("%Y-%m-%d %H:%M:%S"))
@@ -89,6 +99,9 @@ def parse_utma(cookie_value,file_offset,host,type,toPrint=True):
             utma_value["Hit"]=(utma_values[6])
         
         else:
+            #wft?!?  not sure if this is right
+            utma_value["User"] = (utma_values[1])
+
             #cookie create time
         
             utma_value["Created_Epoch"] = (utma_values[2])
@@ -112,8 +125,20 @@ def parse_utma(cookie_value,file_offset,host,type,toPrint=True):
            
             utma_value["Hit"]=(utma_values[5])
         
+        # this is de-duplication code.  if you encounter the same cookie from the same host, don't bother adding it to the file
+        if pcap:
+            m = hashlib.md5()
+            m.update(cookie_value + "," + host)
+            key = m.hexdigest()
+            if user_dict.has_key(key):
+                return 0;
+
+            user_dict[key] = utma_value;
+    
         if toPrint == True:
-            output_utma.write(current_file + "\t" + str(file_offset) + "\t" + str(type) + "\t" + str(host) + "\t" + str(utma_value['Created']) + "\t" + str(utma_value["2ndRecentVisit"]) +"\t" + str(utma_value["MostRecent"]) + "\t" +  str(utma_value["Hit"].rstrip("\n")) + "\n")  
+            file_out = current_file + "\t" + str(file_offset) + "\t" + str(type) + "\t" + str(host) + "\t" + str(utma_value['Created']) + "\t" + str(utma_value["2ndRecentVisit"]) +"\t" + str(utma_value["MostRecent"]) + "\t" +  "\t" + utma_value["User"] + str(utma_value["Hit"].rstrip("\n") + "\n")
+            output_utma.write(file_out)
+
         return utma_value
     
 def parse_utmb(cookie_value,file_offset,host,c_type):
@@ -362,6 +387,48 @@ def parse_utm_gif(line):
 #########################  Functions to grep utma, umtb, utmz and utm.gif values for various browsers    ##########################
 
 
+def process_pcap_utma(pattern, chunk):
+    global pcap_utma_count
+    global loop
+
+    for m in pattern.finditer(chunk.http.cookie):
+        print "Pcap utma hit found at frame " + str(chunk.frame_info.number)
+
+        host = chunk.http.host
+
+        retval = parse_utma(m.group(1),chunk.frame_info.number,host,"pcap")
+        
+        if retval != 0:
+            pcap_utma_count = pcap_utma_count + 1      
+       
+        
+def process_pcap_utmb(pattern, chunk):
+    global pcap_utmb_count
+    global loop
+
+    p = re.compile(pcap_pattern_utmb)
+    for m in p.finditer(chunk.http.cookie):
+        print "Pcap utmb Hit found at frame " + str(chunk.frame_info.number)
+                 
+        pcap_utmb_count = pcap_utmb_count + 1
+        host = chunk.http.host
+
+        parse_utmb(m.group(2),chunk.frame_info.number,host,"pcap")
+ 
+def process_pcap_utmz(pattern,chunk):
+    global pcap_utmz_count
+    global loop
+    
+    p = re.compile(pcap_pattern_utmz)
+    for m in p.finditer(chunk.http.cookie):
+        print "Pcap utmz Hit found at frame " + str(chunk.frame_info.number)
+        
+        pcap_utmz_count = pcap_utmz_count + 1
+        host = chunk.http.host
+            
+        parse_utmz((m.group())[6:-3],chunk.frame_info.number,host,"pcap")
+        
+ 
 def process_chrome_utma(pattern, chunk):
     global chrome_utma_count
     global loop
@@ -735,6 +802,8 @@ from optparse import OptionParser
 
 input_parser = OptionParser(usage=usage)
 
+#full file path to pcap file
+input_parser.add_option("-p", dest = "pcap_file", metavar="/tmp/data.pcap", help = "pcap file to analyze for cookies")
 
 #full file path to file
 input_parser.add_option("-f", dest = "input_file", metavar="memdump.mem", help = "file to carve for cookies")
@@ -752,6 +821,7 @@ input_parser.add_option("--firefox", action="store_true", dest="firefox", help =
 input_parser.add_option("--ie", action="store_true", dest="ie", help = "choose one or more")
 input_parser.add_option("--gif",action = "store_true", dest="gif_cache", help = "choose one or more")
 input_parser.add_option("--apple", action="store_true", dest="apple", help = "choose one or more")
+input_parser.add_option("--pcap", action="store_true", dest="pcap", help = "choose one or more")
 if ewf_available:
     input_parser.add_option("--ewf", action="store_true", dest="ewf", help = "Select this is the input file is EWF format. Libewf must be installeds")
 (options,args)=input_parser.parse_args()
@@ -761,12 +831,18 @@ firefox = options.firefox
 gif_cache = options.gif_cache
 ie = options.ie
 apple = options.apple
+pcap = options.pcap
 output_folder = options.output
 directory = options.directory
 if ewf_available:
     ewf_file = options.ewf
 else:
 	ewf_file = False
+
+if pcap:
+    if pyshark_available == False:
+        print "pyshark is required to process pcap files 'pip install pyshark'"
+        exit(0)
 
 
 #no arguments givene by user,exit
@@ -775,7 +851,7 @@ if len(sys.argv) == 1:
     exit(0)
 
 #at least one option needs to be selected
-if chrome != True and firefox != True and gif_cache != True and ie != True and apple != True:
+if chrome != True and firefox != True and gif_cache != True and ie != True and apple != True and pcap != True:
     print "Please select at least one of the following: --chrome, --firefox --ie --apple or --gif"
     exit(0)
 
@@ -788,13 +864,16 @@ if '/' in options.output:
     
     
 #open files for output
-if chrome or firefox or ie or apple:
+if pyshark_available and pcap:
+    cap = pyshark.FileCapture(options.pcap_file, display_filter='http.cookie and http.cookie contains "__utm"')
+    
+if chrome or firefox or ie or apple or pcap:
     output_utmz = open(output_folder + seperator + "utmz.tsv", "a")
     output_utma = open(output_folder + seperator + "utma.tsv", "a")
     output_utmb = open(output_folder + seperator + "utmb.tsv","a")
     
     #write out file headers
-    output_utma.write("File\tOffset\tType\tHost\tCreated\t2ndRecentVisit\tMostRecent\tHits\n")
+    output_utma.write("File\tOffset\tType\tHost\tCreated\t2ndRecentVisit\tMostRecent\tHits\tUser\n")
     output_utmb.write("File\tOffset\tType\tHost\tPage Views\tOutbound Links\tStart Current Session\n")                   
     output_utmz.write("File\tOffset\tType\tHost\tLast Update\tSource\tCampaign name\tAccess method\tKeyword\tReferringPage\n")
     
@@ -808,6 +887,13 @@ if gif_cache:
     #write out file header
     output_utm_gif.write("File\tOffset\tType\tutma_first\tutma_previous\tutma_last\tutma_hit\tutmhn_hostname\tudmt_page_title\tutmp_page_request\ttutmr_full_referral URL\n")
     
+if pcap:
+    #k=10.36.23.137.1346686401577871; guest_id=v1%3A134668640161632233; __utma=43838368.1073970953.1346686403.1346686403.1346686403.1; __utmz=43838368.1346686403.1.1.utmcsr=adobe.com|utmccn=(referral)|utmcmd=referral|utmcct=/products/photoshop.html; pid=v3:1346686752260155837788172
+    #pcap utm grep patterns
+    pcap_pattern_utma =  re.compile(r'__utma=(([0-9]{0,10}\.){5}([0-9])*)(\x3B)')
+    pcap_pattern_utmz =  re.compile(r'(__utmz=)(([0-9]{0,10}\.){4}utm(.*?)\s*\x3B)')
+    pcap_pattern_utmb =  re.compile(r'(__utmb=)(([0-9]{0,10}\.){3}[0-9]{0,10})')
+
 if chrome:
     #chrome utm grep patterns
     chrome_pattern_utma =  re.compile(r'__utma(([0-9]{0,10}\.){5}([0-9])*)(\/)')
@@ -835,6 +921,10 @@ if apple:
 
 
 #count vars to keep track of total records processed
+pcap_utma_count = 0
+pcap_utmb_count = 0
+pcap_utmz_count = 0
+
 chrome_utma_count = 0
 chrome_utmb_count = 0
 chrome_utmz_count = 0
@@ -860,6 +950,8 @@ not_processed= []
 #can be increased if more ram is available
 maxfilesize = 100000000
 
+#keep track of the GA User
+user_dict = {}
 
 #printable chars allowed in urls and domain names
 allowed_chars = r'[\.a-zA-Z\d-]'
@@ -928,6 +1020,13 @@ if directory != None:
 
             file_object.close(  )
 
+if options.pcap:
+    current_file = options.pcap_file
+    for pkt in cap:
+        process_pcap_utma(pcap_pattern_utma, pkt)
+        process_pcap_utmb(pcap_pattern_utmb, pkt)
+        process_pcap_utmz(pcap_pattern_utmz, pkt)
+
 #just one file was selected, process that
 if options.input_file:
     file_object = open(options.input_file, 'rb')
@@ -946,7 +1045,7 @@ if options.input_file:
         else:
             chunk = file_object.read(maxfilesize)
         if not chunk: break
-        
+
         if chrome:
             process_chrome_utma(chrome_pattern_utma, chunk)
             process_chrome_utmb(chrome_pattern_utmb, chunk)
@@ -978,6 +1077,11 @@ if options.input_file:
     file_object.close(  )    
 
 print "\r\r************ Summary ************"        
+if pcap:
+    print "Pcap __utma count processed: " + str(pcap_utma_count)
+    print "Pcap __utmb count processed: " + str(pcap_utmb_count)
+    print "Pcap __utmz count found: " + str(pcap_utmz_count)
+
 if chrome:
     print "Chrome __utma count processed: " + str(chrome_utma_count)
     print "Chrome __utmb count processed: " + str(chrome_utmb_count)
@@ -1016,4 +1120,3 @@ if not_processed:
     print "Unable to process:"
     for item in not_processed:
         print item
-
